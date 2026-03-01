@@ -53,7 +53,7 @@ location_details = {
 }
 
 # --- weather code file path ----
-wc_filepath = Path(__file__).parent.resolve() / "weather_code.json"
+wc_filepath = Path(__file__).parents[3].resolve() / "data" / "weather_code.json"
 
 # --- Data class -------------------------
 @dataclass
@@ -99,7 +99,7 @@ def is_daytime() -> bool:
     and 18:00 (exclusive). Otherwise return False.
     """
     now = datetime.now().astimezone()
-    return 6 <= now.hour < 18
+    return 7 <= now.hour < 19
 
 def get_day_or_night() -> str:
     """
@@ -137,8 +137,7 @@ def get_coordinate(
 def get_current_weather(
     weather_url: str,
     latitude: float,
-    longitude: float,
-    weather_code_filepath: str | Path = wc_filepath
+    longitude: float
 ) -> CurrentWeather | None:
     formatted_url = weather_url.format(latitude=latitude, longitude=longitude)
     response = WeatherAPIRequestor.make_api_call(formatted_url)
@@ -149,7 +148,7 @@ def get_current_weather(
     
     desc = str(current_data.get("weather_code"))
     try:
-        weather_code_ref = load_json_file(weather_code_filepath)
+        weather_code_ref = load_json_file(wc_filepath)
 
         desc = (
             weather_code_ref[desc]
@@ -239,17 +238,42 @@ def display_current_weather(weather: CurrentWeather, location_name: str, timezon
     console.print(Panel(t, title=title, border_style="bright_blue", padding=(1, 2)))
 
 def display_air_quality(data: dict, stat: str = "avg"):
-    """Display daily average or max air quality as a rich table."""
+    """Display daily average or max air quality as a rich table.
+    For 'avg', UV index is calculated using daytime hours (06-18) only
+    For 'max', also display hour of occurrence inside the cell"""
     df = pd.DataFrame(data)
     df["time"] = pd.to_datetime(df["time"])
     df["date"] = df["time"].dt.date
+    df["hour"] = df["time"].dt.hour
 
     metrics = ["pm10", "pm2_5", "uv_index"]
     if stat == "max":
-        daily = df.groupby("date")[metrics].max().round(2)
+        # daily max values
+        daily_max = df.groupby("date")[metrics].max().round(2)
+        # hour of max occurrence 
+        hour_records = []
+        for date, group in df.groupby("date"):
+            row = {}
+            for m in metrics:
+                idx = group[m].idxmax()
+                row[f"{m}_hour"] = int(group.loc[idx, "hour"])
+            hour_records.append((date, row))
+
+        hour_df = pd.DataFrame({d: v for d, v in hour_records}).T
+        daily = daily_max.join(hour_df)
         title = "Daily [bold]Max[/bold] Air Quality"
-    else:
-        daily = df.groupby("date")[metrics].mean().round(2)
+    else:  # avg
+        # PM averages use 24h
+        pm_daily = df.groupby("date")[["pm10", "pm2_5"]].mean()
+
+        # uv average uses on daytime average
+        daytime_uv = (
+            df[(df["hour"] >= 7) & (df["hour"] < 19)]
+            .groupby("date")["uv_index"]
+            .mean()
+        )
+
+        daily = pm_daily.join(daytime_uv).round(2)
         title = "Daily [bold]Average[/bold] Air Quality"
 
     table = Table(
@@ -268,12 +292,22 @@ def display_air_quality(data: dict, stat: str = "avg"):
         pm10_val = row["pm10"]
         pm25_val = row["pm2_5"]
         uv_val = row["uv_index"]
+
+        if stat == "max":
+            pm10_text = f"{pm10_val} (h:{int(row['pm10_hour'])})"
+            pm25_text = f"{pm25_val} (h:{int(row["pm2_5_hour"])})"
+            uv_val_text = f"{uv_val} (h:{int(row['uv_index_hour'])})"
+        else:
+            pm10_text = str(pm10_val)
+            pm25_text = str(pm25_val)
+            uv_val_text = str(uv_val) 
+
         table.add_row(
             str(date),
-            Text(f"{pm10_val}", style=f"bold {_pm10_color(pm10_val)}"),
-            Text(f"{pm25_val}", style=f"bold {_pm25_color(pm25_val)}"),
+            Text(pm10_text, style=f"bold {_pm10_color(pm10_val)}"),
+            Text(pm25_text, style=f"bold {_pm25_color(pm25_val)}"),
             Text(
-                f"{uv_val}  [{_uv_label(uv_val)}]",
+                f"{uv_val_text}  [{_uv_label(uv_val)}]",
                 style=f"bold {_uv_color(uv_val)}",
             ),
         )
@@ -384,12 +418,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show only air quality metrics, skip current weather"
     )
-    parser.add_argument(
-        "--weather-codes",
-        default="./weather_code.json",
-        metavar="FILE",
-        help="Path to weather_code.json (default: './weather_code.json')"
-    )
+    # parser.add_argument(
+    #     "--weather-codes",
+    #     default="./weather_code.json",
+    #     metavar="FILE",
+    #     help="Path to weather_code.json (default: './weather_code.json')"
+    # )
     parser.add_argument(
         "--list-locations",
         action="store_true",
@@ -452,8 +486,7 @@ python weather_cli.py --list-locations"""
         if not args.air_only:
             progress.update(task, description="Fecthing current weather...")
             weather = get_current_weather(
-                weather_url, lat, lon,
-                weather_code_filepath=args.weather_codes
+                weather_url, lat, lon
             )
             progress.stop()
             if weather:
@@ -506,3 +539,4 @@ python weather_cli.py --list-locations"""
 
 if __name__ == "__main__":
     main()
+    # print(str(wc_filepath))

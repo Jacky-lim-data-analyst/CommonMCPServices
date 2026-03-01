@@ -56,7 +56,7 @@ location_details: dict[str, dict] = {
 }
 
 # ---- weather code file path ---
-wc_filepath = Path(__file__).parent.resolve() / "weather_code.json"
+wc_filepath = Path(__file__).parents[3].resolve() / "data" / "weather_code.json"
 
 # --- Internal helpers ----
 @dataclass
